@@ -1,5 +1,6 @@
 const express = require('express');
 const https = require('https');
+const http = require('http');
 const WebSocket = require('ws');
 
 const app = express();
@@ -188,6 +189,62 @@ async function approvePairingViaGateway(serviceName, gatewayToken, channel, code
   });
 }
 
+// Fallback: approve pairing via HTTP pairing server on port 18800
+async function approvePairingViaHttp(serviceName, channel, code) {
+  return new Promise((resolve, reject) => {
+    const url = `http://${serviceName}.railway.internal:18800/pairing/approve`;
+    console.log(`[Pairing] HTTP fallback: POST ${url}`);
+
+    const payload = JSON.stringify({ channel, code });
+    const options = {
+      hostname: `${serviceName}.railway.internal`,
+      port: 18800,
+      path: '/pairing/approve',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      },
+      timeout: 15000
+    };
+
+    const req = http.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body);
+          console.log(`[Pairing] HTTP fallback response:`, result);
+          if (res.statusCode === 200 && result.success) {
+            resolve(result);
+          } else {
+            reject(new Error(result.message || 'HTTP pairing failed'));
+          }
+        } catch (err) {
+          reject(new Error('Invalid response from pairing server'));
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('HTTP pairing server timeout'));
+    });
+
+    req.on('error', (err) => {
+      reject(new Error(`HTTP pairing server error: ${err.message}`));
+    });
+
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Helper: wait ms
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'openclaw-pairing-service' });
 });
@@ -209,12 +266,52 @@ app.post('/pairing/approve', authenticate, async (req, res) => {
     const serviceName = await getServiceName(serviceId);
     console.log(`[Pairing] Service name: ${serviceName}`);
 
-    const result = await approvePairingViaGateway(serviceName, gatewayToken, channel, code);
+    // Attempt 1: WebSocket gateway (port 18789)
+    let lastError;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`[Pairing] WebSocket attempt ${attempt}/2...`);
+        const result = await approvePairingViaGateway(serviceName, gatewayToken, channel, code);
+        return res.json({
+          success: true,
+          message: 'Pairing approved successfully',
+          result
+        });
+      } catch (err) {
+        lastError = err;
+        console.warn(`[Pairing] WebSocket attempt ${attempt} failed:`, err.message);
+        if (attempt < 2) await sleep(3000);
+      }
+    }
 
-    res.json({
-      success: true,
-      message: 'Pairing approved successfully',
-      result
+    // Attempt 2: HTTP pairing server fallback (port 18800)
+    try {
+      console.log(`[Pairing] Trying HTTP fallback (port 18800)...`);
+      const result = await approvePairingViaHttp(serviceName, channel, code);
+      return res.json({
+        success: true,
+        message: 'Pairing approved via HTTP fallback',
+        result
+      });
+    } catch (httpErr) {
+      console.warn(`[Pairing] HTTP fallback also failed:`, httpErr.message);
+    }
+
+    // Both methods failed — return manual instructions
+    console.error(`[Pairing] All methods failed. Last WS error:`, lastError?.message);
+
+    const command = `openclaw pairing approve ${channel} ${code}`;
+    res.status(503).json({
+      success: false,
+      error: lastError?.message || 'Connection failed',
+      requiresManual: true,
+      command,
+      instructions: [
+        '1. Go to Railway Dashboard',
+        '2. Open your OpenClaw service → Deployments',
+        '3. Click active deployment → Terminal',
+        '4. Run: ' + command
+      ]
     });
 
   } catch (error) {
