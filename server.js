@@ -80,59 +80,98 @@ async function getServiceName(serviceId) {
 // Approve pairing via OpenClaw WebSocket gateway protocol
 async function approvePairingViaGateway(serviceName, gatewayToken, channel, code) {
   return new Promise((resolve, reject) => {
-    // Connect to OpenClaw gateway WebSocket
     const wsUrl = `ws://${serviceName}.railway.internal:18789`;
     console.log(`[Pairing] Connecting to OpenClaw gateway at ${wsUrl}`);
 
     const ws = new WebSocket(wsUrl);
     let timeout;
+    let messageId = 1;
 
     ws.on('open', () => {
-      console.log(`[Pairing] WebSocket connected`);
+      console.log(`[Pairing] WebSocket connected, waiting for challenge...`);
 
-      // Send node.pair.approve command
-      const message = {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'node.pair.approve',
-        params: {
-          channel,
-          code
-        }
-      };
-
-      // Add auth if gateway token is provided
-      if (gatewayToken) {
-        message.params.token = gatewayToken;
-      }
-
-      console.log(`[Pairing] Sending approve command:`, JSON.stringify(message));
-      ws.send(JSON.stringify(message));
-
-      // Timeout after 15 seconds
+      // Set overall timeout
       timeout = setTimeout(() => {
         ws.close();
-        reject(new Error('Gateway timeout - no response'));
-      }, 15000);
+        reject(new Error('Gateway timeout - no response in 20 seconds'));
+      }, 20000);
     });
 
     ws.on('message', (data) => {
-      clearTimeout(timeout);
-      console.log(`[Pairing] Gateway response:`, data.toString());
-
       try {
-        const response = JSON.parse(data.toString());
+        const msg = JSON.parse(data.toString());
+        console.log(`[Pairing] Gateway message:`, JSON.stringify(msg));
 
-        if (response.error) {
-          ws.close();
-          reject(new Error(response.error.message || 'Gateway error'));
-        } else if (response.result) {
-          ws.close();
-          resolve(response.result);
+        // Handle challenge (initial frame from gateway)
+        if (msg.type === 'challenge') {
+          console.log(`[Pairing] Received challenge, sending connect...`);
+
+          // Send connect request with auth token
+          const connectMsg = {
+            type: 'req',
+            id: messageId++,
+            method: 'connect',
+            params: {
+              protocol: 'openclaw-gateway/v1',
+              client: {
+                name: 'pairing-service',
+                version: '1.0.0'
+              },
+              role: 'admin', // Try admin role for pairing operations
+              scopes: ['pairing']
+            }
+          };
+
+          // Add auth token if provided
+          if (gatewayToken) {
+            connectMsg.params.auth = { token: gatewayToken };
+          }
+
+          ws.send(JSON.stringify(connectMsg));
         }
+
+        // Handle connect response (hello-ok)
+        else if (msg.type === 'res' && msg.ok && msg.payload?.protocol) {
+          console.log(`[Pairing] Connected to gateway, sending pair.approve...`);
+
+          // Send node.pair.approve request
+          const approveMsg = {
+            type: 'req',
+            id: messageId++,
+            method: 'node.pair.approve',
+            params: {
+              channel,
+              code
+            }
+          };
+
+          ws.send(JSON.stringify(approveMsg));
+        }
+
+        // Handle pair.approve response
+        else if (msg.type === 'res' && msg.id >= 2) {
+          clearTimeout(timeout);
+
+          if (msg.ok) {
+            console.log(`[Pairing] Pairing approved successfully`);
+            ws.close();
+            resolve(msg.payload || { success: true });
+          } else {
+            console.log(`[Pairing] Pairing failed:`, msg.error);
+            ws.close();
+            reject(new Error(msg.error?.message || 'Pairing rejected by gateway'));
+          }
+        }
+
+        // Handle error responses
+        else if (msg.type === 'res' && !msg.ok) {
+          clearTimeout(timeout);
+          ws.close();
+          reject(new Error(msg.error?.message || 'Gateway error'));
+        }
+
       } catch (err) {
-        ws.close();
-        reject(err);
+        console.error(`[Pairing] Failed to parse message:`, err);
       }
     });
 
@@ -142,8 +181,9 @@ async function approvePairingViaGateway(serviceName, gatewayToken, channel, code
       reject(err);
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       clearTimeout(timeout);
+      console.log(`[Pairing] WebSocket closed: ${code} ${reason || ''}`);
     });
   });
 }
