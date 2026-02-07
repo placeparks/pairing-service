@@ -22,8 +22,10 @@ if (!API_KEY) {
 
 // Railway credentials
 const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN;
-const PROJECT_ID = process.env.RAILWAY_PROJECT_ID;
-const ENV_ID = process.env.RAILWAY_ENVIRONMENT_ID;
+// Use TARGET_* for the project where OpenClaw instances live
+// (not the pairing service's own project)
+const PROJECT_ID = process.env.TARGET_RAILWAY_PROJECT_ID || process.env.RAILWAY_PROJECT_ID;
+const ENV_ID = process.env.TARGET_RAILWAY_ENVIRONMENT_ID || process.env.RAILWAY_ENVIRONMENT_ID;
 
 if (!RAILWAY_TOKEN) {
   console.error('FATAL: RAILWAY_TOKEN not set');
