@@ -6,10 +6,17 @@ const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+console.log('[Startup] Checking environment variables...');
+console.log('[Startup] PAIRING_SERVICE_API_KEY:', process.env.PAIRING_SERVICE_API_KEY ? 'SET' : 'MISSING');
+console.log('[Startup] RAILWAY_TOKEN:', process.env.RAILWAY_TOKEN ? `SET (${process.env.RAILWAY_TOKEN.substring(0, 8)}...)` : 'MISSING');
+console.log('[Startup] RAILWAY_PROJECT_ID:', process.env.RAILWAY_PROJECT_ID || 'MISSING');
+console.log('[Startup] RAILWAY_ENVIRONMENT_ID:', process.env.RAILWAY_ENVIRONMENT_ID || 'MISSING');
+
 // Security: Require API key for all requests
 const API_KEY = process.env.PAIRING_SERVICE_API_KEY;
 if (!API_KEY) {
   console.error('FATAL: PAIRING_SERVICE_API_KEY environment variable not set');
+  console.error('Set this in Railway: Settings → Variables');
   process.exit(1);
 }
 
@@ -18,9 +25,22 @@ const RAILWAY_TOKEN = process.env.RAILWAY_TOKEN;
 const PROJECT_ID = process.env.RAILWAY_PROJECT_ID;
 const ENV_ID = process.env.RAILWAY_ENVIRONMENT_ID;
 
-if (!RAILWAY_TOKEN || !PROJECT_ID || !ENV_ID) {
-  console.error('FATAL: Missing Railway credentials (RAILWAY_TOKEN, RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID)');
+if (!RAILWAY_TOKEN) {
+  console.error('FATAL: RAILWAY_TOKEN not set');
+  console.error('Set this in Railway: Settings → Variables');
   process.exit(1);
+}
+
+if (!PROJECT_ID || !ENV_ID) {
+  console.error('WARNING: RAILWAY_PROJECT_ID or RAILWAY_ENVIRONMENT_ID not set automatically');
+  console.error('These should be auto-set by Railway. Manual workaround:');
+  console.error('1. Get values from your main app environment');
+  console.error('2. Set them manually in pairing-service Variables');
+  console.error('PROJECT_ID:', PROJECT_ID || 'NOT SET');
+  console.error('ENV_ID:', ENV_ID || 'NOT SET');
+  console.error('');
+  console.error('The service will start but Railway CLI commands may fail without these.');
+  console.error('Continuing anyway...');
 }
 
 app.use(express.json());
